@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
-import json
 
 UPLOAD_FOLDER = st.secrets["UPLOAD_FOLDER"]
 
