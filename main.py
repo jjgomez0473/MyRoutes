@@ -1,16 +1,10 @@
 import streamlit as st
-import os
 import pandas as pd
-from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from io import BytesIO
+import json
 
-load_dotenv()
-
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER")
-ALLOWED_EXTENSIONS = os.getenv("ALLOWED_EXTENSIONS")
-
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".",1)[1].lower() in ALLOWED_EXTENSIONS
+UPLOAD_FOLDER = st.secrets["UPLOAD_FOLDER"]
 
 current_year = datetime.now().year
 day_process = datetime.now() + timedelta(days=1)
@@ -27,17 +21,19 @@ def data_claims():
     df = pd.read_csv(csv_url)
     return df[list_attributes]
 
+
 # Carga todos los datos para el proceso en datasets
-def load_data():
-    archivo_arg = r"datos_pedidos.csv"
+def load_data(file_csv):
+    # archivo_arg = r"datos_pedidos.csv"
     auxiliar = r"aux_ruteo.xlsx"
-    df_pedidos_ar = pd.read_csv( UPLOAD_FOLDER + archivo_arg, encoding="latin-1")
-    df_aux_pup = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="pup")
+    df_pedidos_ar = pd.read_csv( file_csv, encoding="latin-1")    
+    df_aux_pup = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="pup").query('Activo == 1')
     df_aux_status = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="status").query('si_no == "Sí"')
     df_aux_id = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="product_id")
     df_aux_picking = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="picking")
     df_aux_zone = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="zonas")
-    return df_pedidos_ar, df_aux_pup, df_aux_status, df_aux_id, df_aux_picking, df_aux_zone
+    df_aux_hruta = pd.read_excel(UPLOAD_FOLDER + auxiliar, sheet_name="hoja_ruta")
+    return df_pedidos_ar, df_aux_pup, df_aux_status, df_aux_id, df_aux_picking, df_aux_zone, df_aux_hruta
 
 # Generar listas y diccionarios para aplicar a filtros.
 def filter_data(df_aux_status, df_aux_id, df_aux_pup, df_aux_picking, df_aux_zone):
@@ -51,10 +47,12 @@ def filter_data(df_aux_status, df_aux_id, df_aux_pup, df_aux_picking, df_aux_zon
 # Prepara los datos para proceso y análisis
 def prepare_data(df_pedidos_ar, df_aux_pup):
     #convertir columnas  de fecha
+   
     df_pedidos_ar["Fecha_de_entrega_solicitada"] = pd.to_datetime(df_pedidos_ar["Fecha_de_entrega_solicitada"], format="%Y-%m-%d")
     df_pedidos_ar["Fecha_PuP"] = pd.to_datetime(df_pedidos_ar["Fecha_PuP"], format="%d-%m-%Y")
     # Reemplazar los valores de 'Fecha_de_entrega_solicitada' por los de 'Fecha_PuP' donde el Metodo_de_envio sea  "RETIRO EN PICKUP POINT"
     df_pedidos_ar.loc[df_pedidos_ar["Metodo_de_envio"] == "RETIRO EN PICKUP POINT", "Fecha_de_entrega_solicitada"] = df_pedidos_ar.loc[df_pedidos_ar["Metodo_de_envio"] == "RETIRO EN PICKUP POINT", "Fecha_PuP"]
+    df_pedidos_ar.loc[df_pedidos_ar["Metodo_de_envio"] == "RETIRO EN PICKUP POINT", "Dir_Verificada"] = "Verificada"
     # Eliminar la columna 'fecha_entrega_maxima' si ya no la necesitas
     df_pedidos_ar.drop(columns=["Fecha_PuP"], inplace=True)
     # Agregar nuevas columnas
@@ -62,6 +60,11 @@ def prepare_data(df_pedidos_ar, df_aux_pup):
     df_pedidos_ar["fullname"] = df_pedidos_ar["firstname"] + " " + df_pedidos_ar["lastname"]
     #Entrega o retiro
     df_pedidos_ar["delivery_recall"] = "E"
+    # Diccionario condatos auxiliares 
+    df_pedidos_ar["Dir_Verificada"] = df_pedidos_ar["Dir_Verificada"].fillna("No detectada")  
+    df_pedidos_ar["Pedido_comentarios"] = df_pedidos_ar["Pedido_comentarios"].fillna("Sin comentarios")  
+    df_pedidos_ar["data_custom"] = df_pedidos_ar["Dir_Verificada"] + "," + df_pedidos_ar["Pedido_comentarios"]
+    df_pedidos_ar= df_pedidos_ar.drop(["Pedido_comentarios","Dir_Verificada"], axis=1)    
     # Reemplazar los valores en 'atributo_a' con los valores de 'atributo_b' donde 'pup' coincide
     for index,row in df_aux_pup.iterrows():
       df_pedidos_ar.loc[df_pedidos_ar["Pickup_point"] == row["Pickup_point"], "zona"] = row["zona"]
@@ -73,8 +76,7 @@ def prepare_data(df_pedidos_ar, df_aux_pup):
       df_pedidos_ar.loc[df_pedidos_ar["Pickup_point"] == row["Pickup_point"], "shipping_region"] = row["shipping_region"]
       df_pedidos_ar.loc[df_pedidos_ar["Pickup_point"] == row["Pickup_point"], "shipping_country"] = row["shipping_country"]
       df_pedidos_ar.loc[df_pedidos_ar["Pickup_point"] == row["Pickup_point"], "Latitud"] = row["Latitud"]
-      df_pedidos_ar.loc[df_pedidos_ar["Pickup_point"] == row["Pickup_point"], "Longitud"] = row["Longitud"]  
-    
+      df_pedidos_ar.loc[df_pedidos_ar["Pickup_point"] == row["Pickup_point"], "Longitud"] = row["Longitud"]      
     return df_pedidos_ar
 
 # Aplica los filtros 
@@ -84,7 +86,7 @@ def apply_filters(df_pedidos_ar, list_status, list_id):
     filter_id = ~df_pedidos_ar["Producto_pedido_id"].isin(list_id)
     df_filtered = df_pedidos_ar[filter_status & filter_id]
     df_filtered["Aclaraciones"]= df_filtered["Aclaraciones"].fillna("")
-    df_filtered["Pedido_comentarios"]= df_filtered["Pedido_comentarios"].fillna("")
+    df_filtered["data_custom"]= df_filtered["data_custom"].fillna("")
     df_filtered["shipping_street_comment"]= df_filtered["shipping_street_comment"].fillna("")
     return df_filtered
 
@@ -112,8 +114,8 @@ def in_bag(df_filtered, list_picking):
 
 # Agrupa de acuerdo a formato de ruteo preliminar
 def group_data(df_filtered):
-    result_grouped = df_filtered.groupby(["Fecha_de_entrega_solicitada", "Pedido_sucursal", "order_id","zona", "fullname", "shipping_street_full", "shipping_postcode", "shipping_city", "shipping_region", "shipping_country", 
-                                    "shipping_street_comment", "delivery_recall", "shipping_telephone", "Desde_hora", "Hasta_hora", "Latitud", "Longitud", "Pedido_comentarios",  
+    result_grouped = df_filtered.groupby(["Fecha_de_entrega_solicitada", "Pedido_sucursal", "order_id","zona", "fullname", "email", "shipping_street_full", "shipping_postcode", "shipping_city", "shipping_region", "shipping_country", 
+                                    "shipping_street_comment", "delivery_recall", "shipping_telephone", "Desde_hora", "Hasta_hora", "Latitud", "Longitud", "data_custom",  
                                     "Aclaraciones"]).agg({"qty_ordered": "sum"})
     df_grouped = result_grouped.reset_index()
     return df_grouped
@@ -149,16 +151,34 @@ def unify_orders(df_grouped, dict_zones):
     # Reemplazar los valores en 'atributo_a' con los valores de 'atributo_b' donde 'pup' coincide
     for index,row in group_location.iterrows():
       df_grouped.loc[df_grouped["lat_lon"] == row["lat_lon"], "min_parada"] = row["min_parada_prom"] 
+      df_grouped.loc[df_grouped["lat_lon"] == row["lat_lon"], "data_custom"] = df_grouped["data_custom"] + ",Unificado"  
       
-    return df_grouped  
+    return df_grouped 
 
-def model_process():
-    df_pedidos_ar, df_aux_pup, df_aux_status, df_aux_id, df_aux_picking, df_aux_zone = load_data()
+# Crear hoja de ruta
+def create_roadmap(df_grouped, df_aux_hruta):
+    # Cambiar los nombres de los atributos en datos_pedidos según la tabla de conversión
+    conversion_dict = dict(zip(df_aux_hruta['atrib_admin'],df_aux_hruta['atrib_oc']))
+    df_grouped.rename(columns=conversion_dict, inplace=True) 
+    # Obtener la lista de atributos necesarios según atrib_oc en aux_ruteo
+    atributos_necesarios = df_aux_hruta['atrib_oc'].unique()
+    # Asegurar que todos los atributos necesarios están en df_datos_pedidos
+    for atributo in atributos_necesarios:
+        if atributo not in df_grouped.columns:
+            df_grouped[atributo] = ""    
+    #  Seleccionar solo los atributos necesarios y descartar el resto
+    df_grouped = df_grouped[atributos_necesarios] 
+    return df_grouped 
+
+
+def model_process(file_csv, value_date):
+    df_pedidos_ar, df_aux_pup, df_aux_status, df_aux_id, df_aux_picking, df_aux_zone, df_aux_hruta = load_data(file_csv)
     list_status, list_id, list_columns_aux_pup, list_picking, dict_zones = filter_data(df_aux_status, df_aux_id, df_aux_pup, df_aux_picking, df_aux_zone)
     df_pedidos_ar = prepare_data(df_pedidos_ar, df_aux_pup)
     
     # Filtrar fecha a procesar
-    filter_date = df_pedidos_ar["Fecha_de_entrega_solicitada"] == "2024-05-02"
+
+    filter_date = df_pedidos_ar["Fecha_de_entrega_solicitada"] == str(value_date)
     df_pedidos_ar = df_pedidos_ar[filter_date]    
     
     df_filtered = apply_filters(df_pedidos_ar, list_status, list_id)
@@ -168,16 +188,82 @@ def model_process():
     df_grouped = update_comment(df_grouped, picking_dict)
     df_grouped = unify_orders(df_grouped, dict_zones)
     
+    df_grouped= create_roadmap(df_grouped, df_aux_hruta)
+    
     return df_grouped
 
 # Construcción de entorno
-st.set_page_config(page_title="My Routes")
-st.header("My Routes")
-st.title("Uploading Files")
-st.markdown("---")
-file_csv = st.file_uploader("Please upload an csv", type=["csv"])  
-value_date = st.date_input("Enter yupy registration Date", value=day_process)
+st.set_page_config(page_title="My Routes", page_icon=":anger:", layout="wide")
+# Inyectar CSS personalizado para ajustar los márgenes
+st.markdown(
+    """
+    <style>
+    .css-18e3th9 {
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    .css-1d391kg {
+        padding-top: 0.5rem;
+        padding-right: 1rem;
+        padding-bottom: 0.5rem;
+        padding-left: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+hide_st_style = """
+                <style>
+                    #MainMenu {visibility: hidden;}
+                    footer {visibility: hidden;}
+                    header {visibility: hidden;}       
+                </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+menu =["Sucursales"]
+choice = st.sidebar.write("")
 
-data = model_process()
 
-st.dataframe(data)
+def menu():
+    st.header("My Routes")
+    st.divider()
+    value_date = st.date_input("Enter you registration Date", value=day_process, format="YYYY-MM-DD")
+    file_csv = st.file_uploader("Please upload an csv", type=["csv"])  
+    if file_csv is not None:
+        data = model_process(file_csv,value_date)
+        SUCURSALES = data["Personalizado 2"].unique()
+        SUCURSALES_SELECTED = st.sidebar.multiselect("Seleccionar sucursal", SUCURSALES, SUCURSALES )
+        mask_sucursales = data["Personalizado 2"].isin(SUCURSALES_SELECTED)
+        data = data[mask_sucursales]
+        col1, col2, col3, col4 = st.columns(4)
+        orders = data['Nombre'].count()
+        units = data['Cantidad de bultos'].sum()
+        units_order = units / orders
+        col1.metric("Pedidos", f"{orders} #")
+        col2.metric("Cajas", f"{units} UN")
+        col3.metric("Min.Paradas", f"{data['Tiempo en destino (min)'].sum()} Min.")
+        col4.metric("Reenviados", f"{data['Personalizado 1'].str.contains('REE', case=False).sum()} #")   
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Reprogramados", f"{data['Personalizado 1'].str.contains('REP', case=False).sum()} #")    
+        col2.metric("Unificados", f"{data['Personalizado 1'].str.contains('Unifi', case=False).sum()} #") 
+        col3.metric("Dirección No Verificada", f"{data['Personalizado 1'].str.contains('No Verif', case=False).sum()} #")            
+        st.divider() 
+        if len(SUCURSALES_SELECTED) == 1:
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                data.to_excel(writer, sheet_name='Ruteo', index=False)
+            st.sidebar.download_button(label="Download Excel", data=buffer.getvalue(), file_name="datmaset.xlsx", mime="application/vnd.ms-excel")
+        st.dataframe(data)    
+       
+  
+
+
+
+
+       
+       
+       
+    
+menu()

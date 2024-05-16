@@ -127,3 +127,6 @@ Desktop.ini
 # Thumbnails
 ._*
 Thumbs.db
+
+# Streamlit
+secrets.toml
